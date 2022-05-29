@@ -94,3 +94,10 @@ class Person(ANBaseModel):
 
     def __repr__(self):
         return 'Person(id={0}, name={1})'.format(self.id, self.name)
+
+
+class Event(ANBaseModel):
+    """Class representing a specific event instance in AN."""
+
+    def __repr__(self):
+        return 'Event(id={0}, title={1})'.format(self.id, self.title)

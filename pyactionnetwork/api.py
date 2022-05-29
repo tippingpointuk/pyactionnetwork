@@ -3,6 +3,8 @@
 
 import requests
 from urllib.parse import quote
+from ratelimit import limits, RateLimitException
+from backoff import on_exception, expo
 
 
 class ActionNetworkApi:
@@ -36,7 +38,14 @@ class ActionNetworkApi:
         except KeyError:
             raise KeyError("Unknown Resource %s", resource)
 
-    def get_resource(self, resource):
+    # Action Network has a 4 per second rate limit, see
+    # https://actionnetwork.org/docs/#considerations
+    @on_exception(expo, RateLimitException, max_tries=8)
+    @limits(calls=4, period=1)
+    def client(self, method, url, params=None, json=None):
+        return requests.request(method, url, headers=self.headers, params=params, json=json).json()
+
+    def get_resource(self, resource, params={}):
         """Get a resource endpoint by name.
 
         Args:
@@ -46,7 +55,30 @@ class ActionNetworkApi:
             (dict) API response from endpoint or `None` if not found/valid.
         """
         url = self.resource_to_url(resource)
-        return requests.get(url, headers=self.headers).json()
+        return self.client('GET', url, params=params)
+
+    def get_resource_list(self, resource=None, url=None, filter=None, resources=None):
+        if not resources:
+            resources = []
+
+        if resource and not url:
+            url_no_filter = self.resource_to_url(resource)
+            if filter:
+                url = f"{url_no_filter}?filter={quote(filter)}"
+            else:
+                url = url_no_filter
+
+        data = self.client('GET', url)
+        if data.get('error', None):
+            print(data['error'])
+            data = self.client('GET', url_no_filter)
+
+        resources += [d for d in data['_embedded'][f'osdi:{resource}']]
+
+        if data.get('_links', {}).get('next', None):
+            next_url = data.get('_links').get('next').get('href')
+            return self.get_resource_list(url=next_url, resource=resource, resources=resources)
+        return resources
 
     def get_person(self, person_id=None, search_by='email', search_string=None):
         """Search for a user.
@@ -68,8 +100,8 @@ class ActionNetworkApi:
                 search_by,
                 quote(search_string))
 
-        resp = requests.get(url, headers=self.headers)
-        return resp.json()
+        person = self.client('GET', url)
+        return person
 
     def create_person(self,
                       email=None,
@@ -132,8 +164,8 @@ class ActionNetworkApi:
             'add_tags': list(tags)
         }
 
-        resp = requests.post(url, json=payload, headers=self.headers)
-        return resp.json()
+        resp = self.client('POST', url, json=payload)
+        return resp
 
     def update_person(self,
                       person_id=None,
@@ -192,7 +224,7 @@ class ActionNetworkApi:
             'custom_fields': custom_fields,
         }
 
-        resp = requests.put(url, json=payload, headers=self.headers)
+        resp = self.client('PUT', url, json=payload)
         return resp.json()
 
     def search(self, resource, operator, term):
